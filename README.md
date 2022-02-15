@@ -1,3 +1,3 @@
-# blackjack-raw
+# blackjack
 
 This is my first Python Project. 
