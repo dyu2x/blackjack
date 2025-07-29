@@ -9,53 +9,10 @@ fi
 # Prompt the user for the full domain (including subdomain)
 read -p "Enter your full domain (e.g., headscale.example.com): " FULL_DOMAIN
 
-# Prompt for Basic Auth credentials
-read -p "Enter a username for Basic Auth: " BASIC_AUTH_USER
-read -sp "Enter a password for Basic Auth: " BASIC_AUTH_PASS
+# Create required directories
+mkdir -p headscale/data headscale/configs/headscale headscale/headscale-admin-ui
 
-# Create a .htpasswd file
-mkdir -p headscale/configs/headscale
-HTPASSWD_FILE="headscale/configs/headscale/.htpasswd"
-docker run --rm httpd:2.4 htpasswd -Bbn "$BASIC_AUTH_USER" "$BASIC_AUTH_PASS" > "$HTPASSWD_FILE"
-
-# Create a simple login UI with logout button
-mkdir -p headscale/configs/headscale/ui
-cat <<EOF > headscale/configs/headscale/ui/index.html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Headscale Admin</title>
-  <style>
-    body { font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }
-    .container { max-width: 400px; margin: auto; }
-    button.logout { background-color: #f44336; color: white; padding: 10px 20px; border: none; cursor: pointer; }
-    button.logout:hover { background-color: #d32f2f; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>Welcome to Headscale Admin</h1>
-    <p>You are logged in.</p>
-    <button class="logout" onclick="logout()">Log Out</button>
-  </div>
-  <script>
-    function logout() {
-      fetch('/logout', { method: 'GET' })
-        .then(() => {
-          window.location.href = '/';
-        });
-    }
-  </script>
-</body>
-</html>
-EOF
-
-# Create the directory structure
-mkdir -p headscale/data headscale/letsencrypt
-
-# Create the docker-compose.yaml file
+# Create Docker Compose file
 cat <<EOF > headscale/docker-compose.yaml
 services:
   headscale:
@@ -70,36 +27,25 @@ services:
       TZ: 'America/New_York'
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.headscale.rule=Host(\`$FULL_DOMAIN\`)"
+      - "traefik.http.routers.headscale.rule=Host(\\\`$FULL_DOMAIN\\\`)"
       - "traefik.http.routers.headscale.tls.certresolver=myresolver"
       - "traefik.http.routers.headscale.entrypoints=websecure"
       - "traefik.http.routers.headscale.tls=true"
       - "traefik.http.services.headscale.loadbalancer.server.port=8080"
 
   headscale-admin:
-    image: 'goodieshq/headscale-admin:latest'
+    image: 'nginx:alpine'
     container_name: 'headscale-admin'
     restart: 'unless-stopped'
+    volumes:
+      - ./headscale-admin-ui:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.headscale-admin.rule=Host(\`$FULL_DOMAIN\`) && PathPrefix(\`/admin\`)"
+      - "traefik.http.services.headscale-admin.loadbalancer.server.port=80"
+      - "traefik.http.routers.headscale-admin.rule=Host(\\\`$FULL_DOMAIN\\\`) && PathPrefix(\\\`/admin\\\`)"
       - "traefik.http.routers.headscale-admin.entrypoints=websecure"
       - "traefik.http.routers.headscale-admin.tls=true"
-      - "traefik.http.routers.headscale-admin.middlewares=auth"
-      - "traefik.http.services.headscale-admin.loadbalancer.server.port=80"
-
-  login-ui:
-    image: nginx:alpine
-    container_name: login-ui
-    volumes:
-      - ./configs/headscale/ui:/usr/share/nginx/html:ro
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.login-ui.rule=Host(\`$FULL_DOMAIN\`) && PathPrefix(\`/\`)"
-      - "traefik.http.routers.login-ui.entrypoints=websecure"
-      - "traefik.http.routers.login-ui.tls=true"
-      - "traefik.http.routers.login-ui.middlewares=auth"
-      - "traefik.http.services.login-ui.loadbalancer.server.port=80"
 
   traefik:
     image: "traefik:latest"
@@ -122,12 +68,9 @@ services:
     volumes:
       - "./letsencrypt:/letsencrypt"
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
-      - "./configs/headscale:/etc/headscale"
-    labels:
-      - "traefik.http.middlewares.auth.basicauth.usersfile=/etc/headscale/.htpasswd"
 EOF
 
-# Create the config.yaml file
+# Create Headscale config.yaml
 cat <<EOF > headscale/configs/headscale/config.yaml
 server_url: https://$FULL_DOMAIN
 listen_addr: 0.0.0.0:8080
@@ -203,29 +146,116 @@ logtail:
 randomize_client_port: false
 EOF
 
-# Notify the user
-echo "Deployment files created in 'headscale' directory."
+# Create login.html
+cat <<EOF > headscale/headscale-admin-ui/login.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Headscale Admin Login</title>
+  <style>
+    body {
+      background: #1e1e2f;
+      font-family: sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      color: white;
+    }
+    .login-box {
+      background: #2a2a3d;
+      padding: 2rem;
+      border-radius: 10px;
+      box-shadow: 0 0 20px rgba(0,0,0,0.5);
+    }
+    input {
+      display: block;
+      width: 100%;
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 5px;
+      border: none;
+    }
+    button {
+      margin-top: 15px;
+      padding: 10px;
+      width: 100%;
+      border: none;
+      border-radius: 5px;
+      background: #4caf50;
+      color: white;
+      font-weight: bold;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="login-box">
+    <h2>Admin Login</h2>
+    <input type="text" id="username" placeholder="Username" />
+    <input type="password" id="password" placeholder="Password" />
+    <button onclick="login()">Login</button>
+  </div>
 
-# Start the Docker containers
-if ! docker compose -f headscale/docker-compose.yaml up -d; then
-    echo "Failed to start Docker containers. Exiting..."
-    exit 1
-fi
+  <script>
+    function login() {
+      const user = document.getElementById("username").value;
+      const pass = document.getElementById("password").value;
+      if (user === "admin" && pass === "changeme") {
+        localStorage.setItem("authenticated", "true");
+        window.location.href = "/admin";
+      } else {
+        alert("Invalid credentials");
+      }
+    }
+    if (localStorage.getItem("authenticated") === "true") {
+      window.location.href = "/admin";
+    }
+  </script>
+</body>
+</html>
+EOF
 
-# Wait a few seconds for the containers to start
+# Create nginx.conf
+cat <<EOF > headscale/nginx.conf
+events {}
+
+http {
+  server {
+    listen 80;
+    location = /admin {
+      try_files /login.html =404;
+    }
+    location /admin/ {
+      root /usr/share/nginx/html;
+      index index.html;
+    }
+    location / {
+      root /usr/share/nginx/html;
+      index login.html;
+    }
+  }
+}
+EOF
+
+# Start Docker containers
+docker compose -f headscale/docker-compose.yaml up -d
+
+# Wait for Headscale to start
 sleep 10
 
-# Create the API key and capture the output
+# Create API key
 API_KEY=$(docker exec headscale headscale apikey create)
 if [ $? -ne 0 ]; then
     echo "Failed to create API Key. Exiting..."
     exit 1
 fi
 
-# Display the API key and instructions to the user
+# Display setup info
 echo "API Key generated: $API_KEY"
-echo "Visit: https://$FULL_DOMAIN/admin (Basic Auth login required)"
-echo "Use the following settings in the admin UI:"
+echo "Visit: https://$FULL_DOMAIN/admin"
+echo "Username: admin"
+echo "Password: changeme"
 echo "API URL: https://$FULL_DOMAIN"
 echo "API Key: $API_KEY"
-echo "To logout, click the logout button on the welcome page or clear credentials from the browser."
