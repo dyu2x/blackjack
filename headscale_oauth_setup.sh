@@ -1,39 +1,43 @@
 #!/bin/bash
 
-# --- Simple Login Prompt ---
-USERNAME="admin"
-PASSWORD="your_password_here"  # Change this to a strong password
-
-read -p "Username: " input_user
-read -sp "Password: " input_pass
-echo
-
-if [[ "$input_user" != "$USERNAME" || "$input_pass" != "$PASSWORD" ]]; then
-  echo "Authentication failed. Exiting..."
-  exit 1
-fi
-echo "Authentication successful."
-
-# --- Check if the script is run as root ---
+# Check if the script is run as root
 if [[ $EUID -ne 0 ]]; then
    echo "This script must be run as root." 
    exit 1
 fi
 
-# Prompt the user for the full domain (including subdomain)
+# Check if htpasswd is installed (for bcrypt hash generation)
+if ! command -v htpasswd &>/dev/null; then
+    echo "htpasswd is required but not installed. Please install apache2-utils or httpd-tools."
+    exit 1
+fi
+
+# Prompt user for full domain (including subdomain)
 read -p "Enter your full domain (e.g., headscale.example.com): " FULL_DOMAIN
 
-# Create the directory structure
-mkdir -p headscale/data headscale/configs/headscale
+# Prompt for basic auth username and password for headscale-admin UI
+read -p "Enter Basic Auth username for headscale-admin UI (e.g., admin): " BASICAUTH_USER
 
-# Create the docker-compose.yaml file
+# Prompt for Basic Auth password securely (hidden input)
+read -sp "Enter Basic Auth password for headscale-admin UI: " BASICAUTH_PASS
+echo
+
+# Generate bcrypt hash of the password using htpasswd
+BASICAUTH_HASH=$(htpasswd -nbB "$BASICAUTH_USER" "$BASICAUTH_PASS" | cut -d ":" -f 2)
+
+# Create the directory structure
+mkdir -p headscale/data headscale/configs/headscale letsencrypt
+
+# Create the docker-compose.yaml file with dynamic values
 cat <<EOF > headscale/docker-compose.yaml
+version: '3.8'
+
 services:
   headscale:
     image: 'headscale/headscale:latest'
     container_name: 'headscale'
-    restart: 'unless-stopped'
-    command: 'serve'
+    restart: unless-stopped
+    command: serve
     volumes:
       - './data:/var/lib/headscale'
       - './configs/headscale:/etc/headscale'
@@ -50,17 +54,22 @@ services:
   headscale-admin:
     image: 'goodieshq/headscale-admin:latest'
     container_name: 'headscale-admin'
-    restart: 'unless-stopped'
+    restart: unless-stopped
     labels:
       - "traefik.enable=true"
       - "traefik.http.services.headscale-admin.loadbalancer.server.port=80"
       - "traefik.http.routers.headscale-admin.rule=Host(\`$FULL_DOMAIN\`) && PathPrefix(\`/admin\`)"
       - "traefik.http.routers.headscale-admin.entrypoints=websecure"
       - "traefik.http.routers.headscale-admin.tls=true"
+      - "traefik.http.routers.headscale-admin.middlewares=headscale-admin-auth"
+
+      # Basic Auth Middleware for /admin
+      - "traefik.http.middlewares.headscale-admin-auth.basicauth.users=$BASICAUTH_USER:$BASICAUTH_HASH"
 
   traefik:
     image: "traefik:latest"
     container_name: "traefik"
+    restart: unless-stopped
     command:
       - "--api.insecure=true"
       - "--providers.docker=true"
@@ -158,7 +167,6 @@ logtail:
 randomize_client_port: false
 EOF
 
-# Notify the user
 echo "Deployment files created in 'headscale' directory."
 
 # Start the Docker containers
@@ -177,7 +185,6 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Display the API key and instructions to the user
 echo "API Key generated: $API_KEY"
 echo "Visit: https://$FULL_DOMAIN/admin/settings"
 echo "Enter the following settings:"
