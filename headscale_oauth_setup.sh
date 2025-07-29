@@ -6,38 +6,51 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# Check if htpasswd is installed (for bcrypt hash generation)
-if ! command -v htpasswd &>/dev/null; then
-    echo "htpasswd is required but not installed. Please install apache2-utils or httpd-tools."
-    exit 1
-fi
-
-# Prompt user for full domain (including subdomain)
+# Prompt the user for the full domain (including subdomain)
 read -p "Enter your full domain (e.g., headscale.example.com): " FULL_DOMAIN
 
-# Prompt for basic auth username and password for headscale-admin UI
-read -p "Enter Basic Auth username for headscale-admin UI (e.g., admin): " BASICAUTH_USER
-
-# Prompt for Basic Auth password securely (hidden input)
-read -sp "Enter Basic Auth password for headscale-admin UI: " BASICAUTH_PASS
-echo
-
-# Generate bcrypt hash of the password using htpasswd
-BASICAUTH_HASH=$(htpasswd -nbB "$BASICAUTH_USER" "$BASICAUTH_PASS" | cut -d ":" -f 2)
+# Prompt for Basic Auth credentials
+read -p "Enter a username for the login page: " BASIC_AUTH_USER
+read -sp "Enter a password for the login page: " BASIC_AUTH_PASS
 
 # Create the directory structure
-mkdir -p headscale/data headscale/configs/headscale letsencrypt
+mkdir -p headscale/data headscale/configs/headscale headscale/configs/login headscale/letsencrypt
 
-# Create the docker-compose.yaml file with dynamic values
+# Create .htpasswd file
+HTPASSWD_FILE="headscale/configs/headscale/.htpasswd"
+docker run --rm httpd:2.4 htpasswd -Bbn "$BASIC_AUTH_USER" "$BASIC_AUTH_PASS" > "$HTPASSWD_FILE"
+
+# Create login HTML page
+cat <<EOF > headscale/configs/login/index.html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Headscale Admin Login</title>
+</head>
+<body style="font-family: Arial; text-align: center; margin-top: 10%;">
+    <h2>Welcome to Headscale Admin</h2>
+    <p>You're authenticated via Basic Auth</p>
+    <a href="/admin" style="font-size: 20px;">Go to Admin Dashboard</a><br><br>
+    <button onclick="logout()">Log Out</button>
+
+    <script>
+    function logout() {
+        // Trigger browser logout
+        document.location.href = 'https://$FULL_DOMAIN/logout';
+    }
+    </script>
+</body>
+</html>
+EOF
+
+# Create docker-compose.yaml file
 cat <<EOF > headscale/docker-compose.yaml
-version: '3.8'
-
 services:
   headscale:
     image: 'headscale/headscale:latest'
     container_name: 'headscale'
-    restart: unless-stopped
-    command: serve
+    restart: 'unless-stopped'
+    command: 'serve'
     volumes:
       - './data:/var/lib/headscale'
       - './configs/headscale:/etc/headscale'
@@ -54,22 +67,31 @@ services:
   headscale-admin:
     image: 'goodieshq/headscale-admin:latest'
     container_name: 'headscale-admin'
-    restart: unless-stopped
+    restart: 'unless-stopped'
     labels:
       - "traefik.enable=true"
       - "traefik.http.services.headscale-admin.loadbalancer.server.port=80"
       - "traefik.http.routers.headscale-admin.rule=Host(\`$FULL_DOMAIN\`) && PathPrefix(\`/admin\`)"
       - "traefik.http.routers.headscale-admin.entrypoints=websecure"
       - "traefik.http.routers.headscale-admin.tls=true"
-      - "traefik.http.routers.headscale-admin.middlewares=headscale-admin-auth"
+      - "traefik.http.routers.headscale-admin.middlewares=auth"
 
-      # Basic Auth Middleware for /admin
-      - "traefik.http.middlewares.headscale-admin-auth.basicauth.users=$BASICAUTH_USER:$BASICAUTH_HASH"
+  login-ui:
+    image: nginx:alpine
+    container_name: login-ui
+    volumes:
+      - ./configs/login:/usr/share/nginx/html:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.login.rule=Host(\`$FULL_DOMAIN\`) && Path(`/`)"
+      - "traefik.http.routers.login.entrypoints=websecure"
+      - "traefik.http.routers.login.tls=true"
+      - "traefik.http.routers.login.middlewares=auth"
+      - "traefik.http.services.login.loadbalancer.server.port=80"
 
   traefik:
     image: "traefik:latest"
     container_name: "traefik"
-    restart: unless-stopped
     command:
       - "--api.insecure=true"
       - "--providers.docker=true"
@@ -88,7 +110,9 @@ services:
     volumes:
       - "./letsencrypt:/letsencrypt"
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
-
+      - "./configs/headscale:/etc/headscale"
+    labels:
+      - "traefik.http.middlewares.auth.basicauth.usersfile=/etc/headscale/.htpasswd"
 EOF
 
 # Create the config.yaml file
@@ -167,6 +191,7 @@ logtail:
 randomize_client_port: false
 EOF
 
+# Notify the user
 echo "Deployment files created in 'headscale' directory."
 
 # Start the Docker containers
@@ -185,8 +210,10 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# Display the API key and instructions to the user
 echo "API Key generated: $API_KEY"
-echo "Visit: https://$FULL_DOMAIN/admin/settings"
-echo "Enter the following settings:"
+echo "Visit: https://$FULL_DOMAIN (login UI)"
+echo "Visit: https://$FULL_DOMAIN/admin/settings (Headscale Admin Dashboard)"
 echo "API URL: https://$FULL_DOMAIN"
 echo "API Key: $API_KEY"
+echo "Log out by visiting: https://$FULL_DOMAIN/logout or clearing browser auth credentials."
