@@ -1,21 +1,77 @@
 #!/bin/bash
 
-# Ensure script is run as root
-if [[ $EUID -ne 0 ]]; then
-   echo "This script must be run as root."
-   exit 1
+# === Simple Login/Logout Authentication ===
+
+USERS_FILE="users.txt"
+SESSION_FILE=".session"
+
+function hash_password() {
+  echo -n "$1" | sha256sum | awk '{print $1}'
+}
+
+function create_user() {
+  echo "No user found. Let's create an admin user."
+  read -p "Create a username: " USERNAME
+  read -s -p "Create a password: " PASSWORD
+  echo
+  HASHED_PASS=$(hash_password "$PASSWORD")
+  echo "$USERNAME:$HASHED_PASS" >> "$USERS_FILE"
+  echo "User '$USERNAME' created."
+}
+
+function login() {
+  read -p "Username: " USERNAME
+  read -s -p "Password: " PASSWORD
+  echo
+  HASHED_PASS=$(hash_password "$PASSWORD")
+
+  if grep -q "^$USERNAME:$HASHED_PASS$" "$USERS_FILE"; then
+    echo "$USERNAME" > "$SESSION_FILE"
+    echo "Login successful. Welcome, $USERNAME."
+  else
+    echo "Invalid credentials."
+    exit 1
+  fi
+}
+
+function logout() {
+  rm -f "$SESSION_FILE"
+  echo "Logged out successfully."
+  exit 0
+}
+
+# === Handle logout flag ===
+if [[ "$1" == "logout" ]]; then
+  logout
 fi
 
-# Prompt for full domain
+# === Setup users if not exists ===
+if [ ! -f "$USERS_FILE" ]; then
+  create_user
+fi
+
+# === Session check ===
+if [ ! -f "$SESSION_FILE" ]; then
+  echo "Please log in:"
+  login
+else
+  USER=$(cat "$SESSION_FILE")
+  echo "Welcome back, $USER."
+fi
+
+# === Root check ===
+if [[ $EUID -ne 0 ]]; then
+  echo "This script must be run as root."
+  exit 1
+fi
+
+# === Domain prompt ===
 read -p "Enter your full domain (e.g., headscale.example.com): " FULL_DOMAIN
 
-# Create directory structure
-mkdir -p headscale/data headscale/configs/headscale headscale/headscale-admin-ui
+# === Create directories ===
+mkdir -p headscale/data headscale/configs/headscale
 
-# Set executable permissions for scripts and configs
-chmod -R 755 headscale
-
-# Create docker-compose.yaml
+# === Create docker-compose.yaml ===
 cat <<EOF > headscale/docker-compose.yaml
 services:
   headscale:
@@ -40,8 +96,6 @@ services:
     image: 'goodieshq/headscale-admin:latest'
     container_name: 'headscale-admin'
     restart: 'unless-stopped'
-    volumes:
-      - './headscale-admin-ui:/usr/share/nginx/html'
     labels:
       - "traefik.enable=true"
       - "traefik.http.services.headscale-admin.loadbalancer.server.port=80"
@@ -72,81 +126,103 @@ services:
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
 EOF
 
-# Create sample login page
-cat <<EOF > headscale/headscale-admin-ui/login.html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Login - Headscale Admin</title>
-  <style>
-    body {
-      font-family: sans-serif;
-      background: #f0f4f8;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-    }
-    .login-box {
-      background: white;
-      padding: 2rem;
-      border-radius: 12px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-      width: 100%;
-      max-width: 400px;
-    }
-    .login-box h2 {
-      margin-bottom: 1rem;
-    }
-    input {
-      width: 100%;
-      padding: 0.75rem;
-      margin: 0.5rem 0;
-      border-radius: 8px;
-      border: 1px solid #ccc;
-    }
-    button {
-      width: 100%;
-      padding: 0.75rem;
-      background: #007bff;
-      color: white;
-      border: none;
-      border-radius: 8px;
-      cursor: pointer;
-    }
-    button:hover {
-      background: #0056b3;
-    }
-  </style>
-</head>
-<body>
-  <div class="login-box">
-    <h2>Login</h2>
-    <form>
-      <input type="text" placeholder="Username" required />
-      <input type="password" placeholder="Password" required />
-      <button type="submit">Log In</button>
-    </form>
-  </div>
-</body>
-</html>
+# === Create config.yaml for Headscale ===
+cat <<EOF > headscale/configs/headscale/config.yaml
+server_url: https://$FULL_DOMAIN
+listen_addr: 0.0.0.0:8080
+metrics_listen_addr: 127.0.0.1:9090
+grpc_listen_addr: 127.0.0.1:50443
+grpc_allow_insecure: false
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+  allocation: sequential
+derp:
+  server:
+    enabled: true
+    region_id: 999
+    region_code: "headscale"
+    region_name: "Headscale Embedded DERP"
+    stun_listen_addr: "0.0.0.0:3478"
+    private_key_path: /var/lib/headscale/derp_server_private.key
+    automatically_add_embedded_derp_region: true
+    ipv4: 1.2.3.4
+    ipv6: 2001:db8::1
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
+  paths: []
+  auto_update_enabled: true
+  update_frequency: 24h
+disable_check_updates: false
+ephemeral_node_inactivity_timeout: 30m
+database:
+  type: sqlite
+  debug: false
+  gorm:
+    prepare_stmt: true
+    parameterized_queries: true
+    skip_err_record_not_found: true
+    slow_threshold: 1000
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+    write_ahead_log: true
+    wal_autocheckpoint: 1000
+acme_url: https://acme-v02.api.letsencrypt.org/directory
+acme_email: ""
+tls_letsencrypt_hostname: ""
+tls_letsencrypt_cache_dir: /var/lib/headscale/cache
+tls_letsencrypt_challenge_type: HTTP-01
+tls_letsencrypt_listen: ":http"
+tls_cert_path: ""
+tls_key_path: ""
+log:
+  format: text
+  level: info
+policy:
+  mode: database
+  path: ""
+dns:
+  magic_dns: true
+  base_domain: example.com
+  nameservers:
+    global:
+      - 1.1.1.1
+      - 1.0.0.1
+      - 2606:4700:4700::1111
+      - 2606:4700:4700::1001
+    split: {}
+  search_domains: []
+  extra_records: []
+unix_socket: /var/run/headscale/headscale.sock
+unix_socket_permission: "0770"
+logtail:
+  enabled: false
+randomize_client_port: false
 EOF
 
-# Start the Docker containers
+# === Start Docker containers ===
+echo "Starting Docker containers..."
 if ! docker compose -f headscale/docker-compose.yaml up -d; then
-    echo "Failed to start Docker containers."
-    exit 1
+  echo "Docker startup failed."
+  exit 1
 fi
 
-# Generate API key
+sleep 10
+
+# === Generate API Key ===
 API_KEY=$(docker exec headscale headscale apikey create)
 if [ $? -ne 0 ]; then
-    echo "Failed to create API key."
-    exit 1
+  echo "Failed to create API Key. Exiting..."
+  exit 1
 fi
 
-# Display connection info
+# === Final Output ===
+echo "==========================================="
+echo "✅ API Key generated: $API_KEY"
+echo "🔧 Admin UI: https://$FULL_DOMAIN/admin/settings"
+echo "Set:"
+echo "API URL: https://$FULL_DOMAIN"
 echo "API Key: $API_KEY"
-echo "Visit: https://$FULL_DOMAIN/admin"
+echo "==========================================="
