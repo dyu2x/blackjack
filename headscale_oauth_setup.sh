@@ -1,77 +1,32 @@
 #!/bin/bash
 
-# === Simple Login/Logout Authentication ===
+# --- Simple Login Prompt ---
+USERNAME="admin"
+PASSWORD="your_password_here"  # Change this to a strong password
 
-USERS_FILE="users.txt"
-SESSION_FILE=".session"
+read -p "Username: " input_user
+read -sp "Password: " input_pass
+echo
 
-function hash_password() {
-  echo -n "$1" | sha256sum | awk '{print $1}'
-}
-
-function create_user() {
-  echo "No user found. Let's create an admin user."
-  read -p "Create a username: " USERNAME
-  read -s -p "Create a password: " PASSWORD
-  echo
-  HASHED_PASS=$(hash_password "$PASSWORD")
-  echo "$USERNAME:$HASHED_PASS" >> "$USERS_FILE"
-  echo "User '$USERNAME' created."
-}
-
-function login() {
-  read -p "Username: " USERNAME
-  read -s -p "Password: " PASSWORD
-  echo
-  HASHED_PASS=$(hash_password "$PASSWORD")
-
-  if grep -q "^$USERNAME:$HASHED_PASS$" "$USERS_FILE"; then
-    echo "$USERNAME" > "$SESSION_FILE"
-    echo "Login successful. Welcome, $USERNAME."
-  else
-    echo "Invalid credentials."
-    exit 1
-  fi
-}
-
-function logout() {
-  rm -f "$SESSION_FILE"
-  echo "Logged out successfully."
-  exit 0
-}
-
-# === Handle logout flag ===
-if [[ "$1" == "logout" ]]; then
-  logout
-fi
-
-# === Setup users if not exists ===
-if [ ! -f "$USERS_FILE" ]; then
-  create_user
-fi
-
-# === Session check ===
-if [ ! -f "$SESSION_FILE" ]; then
-  echo "Please log in:"
-  login
-else
-  USER=$(cat "$SESSION_FILE")
-  echo "Welcome back, $USER."
-fi
-
-# === Root check ===
-if [[ $EUID -ne 0 ]]; then
-  echo "This script must be run as root."
+if [[ "$input_user" != "$USERNAME" || "$input_pass" != "$PASSWORD" ]]; then
+  echo "Authentication failed. Exiting..."
   exit 1
 fi
+echo "Authentication successful."
 
-# === Domain prompt ===
+# --- Check if the script is run as root ---
+if [[ $EUID -ne 0 ]]; then
+   echo "This script must be run as root." 
+   exit 1
+fi
+
+# Prompt the user for the full domain (including subdomain)
 read -p "Enter your full domain (e.g., headscale.example.com): " FULL_DOMAIN
 
-# === Create directories ===
+# Create the directory structure
 mkdir -p headscale/data headscale/configs/headscale
 
-# === Create docker-compose.yaml ===
+# Create the docker-compose.yaml file
 cat <<EOF > headscale/docker-compose.yaml
 services:
   headscale:
@@ -124,9 +79,10 @@ services:
     volumes:
       - "./letsencrypt:/letsencrypt"
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
+
 EOF
 
-# === Create config.yaml for Headscale ===
+# Create the config.yaml file
 cat <<EOF > headscale/configs/headscale/config.yaml
 server_url: https://$FULL_DOMAIN
 listen_addr: 0.0.0.0:8080
@@ -202,27 +158,28 @@ logtail:
 randomize_client_port: false
 EOF
 
-# === Start Docker containers ===
-echo "Starting Docker containers..."
+# Notify the user
+echo "Deployment files created in 'headscale' directory."
+
+# Start the Docker containers
 if ! docker compose -f headscale/docker-compose.yaml up -d; then
-  echo "Docker startup failed."
-  exit 1
+    echo "Failed to start Docker containers. Exiting..."
+    exit 1
 fi
 
+# Wait a few seconds for the containers to start
 sleep 10
 
-# === Generate API Key ===
+# Create the API key and capture the output
 API_KEY=$(docker exec headscale headscale apikey create)
 if [ $? -ne 0 ]; then
-  echo "Failed to create API Key. Exiting..."
-  exit 1
+    echo "Failed to create API Key. Exiting..."
+    exit 1
 fi
 
-# === Final Output ===
-echo "==========================================="
-echo "✅ API Key generated: $API_KEY"
-echo "🔧 Admin UI: https://$FULL_DOMAIN/admin/settings"
-echo "Set:"
+# Display the API key and instructions to the user
+echo "API Key generated: $API_KEY"
+echo "Visit: https://$FULL_DOMAIN/admin/settings"
+echo "Enter the following settings:"
 echo "API URL: https://$FULL_DOMAIN"
 echo "API Key: $API_KEY"
-echo "==========================================="
