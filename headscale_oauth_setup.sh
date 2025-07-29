@@ -9,41 +9,24 @@ fi
 # Prompt the user for the full domain (including subdomain)
 read -p "Enter your full domain (e.g., headscale.example.com): " FULL_DOMAIN
 
-# Prompt for Basic Auth credentials
-read -p "Enter a username for the login page: " BASIC_AUTH_USER
-read -sp "Enter a password for the login page: " BASIC_AUTH_PASS
+# Prompt for login credentials
+read -p "Enter username for WebUI login: " BASIC_AUTH_USER
+read -s -p "Enter password for WebUI login: " BASIC_AUTH_PASS
+echo
+
+# Generate bcrypt hash for the password (requires `htpasswd`)
+if ! command -v htpasswd >/dev/null; then
+  echo "Installing htpasswd..."
+  apt-get update && apt-get install -y apache2-utils
+fi
+
+HASHED_PASS=$(htpasswd -nbB "$BASIC_AUTH_USER" "$BASIC_AUTH_PASS" | cut -d ":" -f 2)
+BASIC_AUTH_CREDENTIALS="${BASIC_AUTH_USER}:${HASHED_PASS}"
 
 # Create the directory structure
-mkdir -p headscale/data headscale/configs/headscale headscale/configs/login headscale/letsencrypt
+mkdir -p headscale/data headscale/configs/headscale headscale/letsencrypt
 
-# Create .htpasswd file
-HTPASSWD_FILE="headscale/configs/headscale/.htpasswd"
-docker run --rm httpd:2.4 htpasswd -Bbn "$BASIC_AUTH_USER" "$BASIC_AUTH_PASS" > "$HTPASSWD_FILE"
-
-# Create login HTML page
-cat <<EOF > headscale/configs/login/index.html
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Headscale Admin Login</title>
-</head>
-<body style="font-family: Arial; text-align: center; margin-top: 10%;">
-    <h2>Welcome to Headscale Admin</h2>
-    <p>You're authenticated via Basic Auth</p>
-    <a href="/admin" style="font-size: 20px;">Go to Admin Dashboard</a><br><br>
-    <button onclick="logout()">Log Out</button>
-
-    <script>
-    function logout() {
-        // Trigger browser logout
-        document.location.href = 'https://$FULL_DOMAIN/logout';
-    }
-    </script>
-</body>
-</html>
-EOF
-
-# Create docker-compose.yaml file
+# Create the docker-compose.yaml file
 cat <<EOF > headscale/docker-compose.yaml
 services:
   headscale:
@@ -74,20 +57,8 @@ services:
       - "traefik.http.routers.headscale-admin.rule=Host(\`$FULL_DOMAIN\`) && PathPrefix(\`/admin\`)"
       - "traefik.http.routers.headscale-admin.entrypoints=websecure"
       - "traefik.http.routers.headscale-admin.tls=true"
-      - "traefik.http.routers.headscale-admin.middlewares=auth"
-
-  login-ui:
-    image: nginx:alpine
-    container_name: login-ui
-    volumes:
-      - ./configs/login:/usr/share/nginx/html:ro
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.login.rule=Host(\`$FULL_DOMAIN\`) && Path(`/`)"
-      - "traefik.http.routers.login.entrypoints=websecure"
-      - "traefik.http.routers.login.tls=true"
-      - "traefik.http.routers.login.middlewares=auth"
-      - "traefik.http.services.login.loadbalancer.server.port=80"
+      - "traefik.http.middlewares.headscale-admin-auth.basicauth.users=$BASIC_AUTH_CREDENTIALS"
+      - "traefik.http.routers.headscale-admin.middlewares=headscale-admin-auth@docker"
 
   traefik:
     image: "traefik:latest"
@@ -110,12 +81,9 @@ services:
     volumes:
       - "./letsencrypt:/letsencrypt"
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
-      - "./configs/headscale:/etc/headscale"
-    labels:
-      - "traefik.http.middlewares.auth.basicauth.usersfile=/etc/headscale/.htpasswd"
 EOF
 
-# Create the config.yaml file
+# Create the Headscale config.yaml file
 cat <<EOF > headscale/configs/headscale/config.yaml
 server_url: https://$FULL_DOMAIN
 listen_addr: 0.0.0.0:8080
@@ -211,9 +179,11 @@ if [ $? -ne 0 ]; then
 fi
 
 # Display the API key and instructions to the user
-echo "API Key generated: $API_KEY"
-echo "Visit: https://$FULL_DOMAIN (login UI)"
-echo "Visit: https://$FULL_DOMAIN/admin/settings (Headscale Admin Dashboard)"
-echo "API URL: https://$FULL_DOMAIN"
-echo "API Key: $API_KEY"
-echo "Log out by visiting: https://$FULL_DOMAIN/logout or clearing browser auth credentials."
+echo
+echo "✅ API Key generated: $API_KEY"
+echo "🔐 WebUI is protected with basic auth."
+echo "🌐 Visit: https://$FULL_DOMAIN/admin/settings"
+echo "🛠️  Enter the following settings:"
+echo "     - API URL: https://$FULL_DOMAIN"
+echo "     - API Key: $API_KEY"
+echo "     - Login:   $BASIC_AUTH_USER"
