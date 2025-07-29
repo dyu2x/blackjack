@@ -9,17 +9,17 @@ fi
 # Prompt the user for the full domain (including subdomain)
 read -p "Enter your full domain (e.g., headscale.example.com): " FULL_DOMAIN
 
-# Prompt for OAuth client info
-read -p "Enter your OAuth2 Client ID: " OAUTH_CLIENT_ID
-read -p "Enter your OAuth2 Client Secret: " OAUTH_CLIENT_SECRET
-read -p "Enter your OAuth2 Provider (e.g. google, github): " OAUTH_PROVIDER
-read -p "Enter the email/domain to allow (e.g. your@email.com or @yourdomain.com): " OAUTH_ALLOWED_EMAIL
+# Prompt for Basic Auth credentials
+read -p "Enter a username for Basic Auth: " BASIC_AUTH_USER
+read -sp "Enter a password for Basic Auth: " BASIC_AUTH_PASS
 
-# Generate a secure cookie secret
-COOKIE_SECRET=$(openssl rand -hex 16)
+# Create a .htpasswd file
+mkdir -p headscale/configs/headscale
+HTPASSWD_FILE="headscale/configs/headscale/.htpasswd"
+docker run --rm httpd:2.4 htpasswd -Bbn "$BASIC_AUTH_USER" "$BASIC_AUTH_PASS" > "$HTPASSWD_FILE"
 
 # Create the directory structure
-mkdir -p headscale/data headscale/configs/headscale headscale/letsencrypt
+mkdir -p headscale/data headscale/letsencrypt
 
 # Create the docker-compose.yaml file
 cat <<EOF > headscale/docker-compose.yaml
@@ -51,33 +51,8 @@ services:
       - "traefik.http.routers.headscale-admin.rule=Host(\`$FULL_DOMAIN\`) && PathPrefix(\`/admin\`)"
       - "traefik.http.routers.headscale-admin.entrypoints=websecure"
       - "traefik.http.routers.headscale-admin.tls=true"
-      - "traefik.http.routers.headscale-admin.middlewares=oauth-auth"
-      - "traefik.http.middlewares.oauth-auth.forwardauth.address=https://$FULL_DOMAIN/oauth2/auth"
-      - "traefik.http.middlewares.oauth-auth.forwardauth.trustforwardheader=true"
-      - "traefik.http.middlewares.oauth-auth.forwardauth.authresponseheaders=X-Auth-Request-User,X-Auth-Request-Email"
+      - "traefik.http.routers.headscale-admin.middlewares=auth"
       - "traefik.http.services.headscale-admin.loadbalancer.server.port=80"
-
-  oauth2-proxy:
-    image: quay.io/oauth2-proxy/oauth2-proxy:latest
-    container_name: oauth2-proxy
-    restart: unless-stopped
-    environment:
-      - OAUTH2_PROXY_PROVIDER=$OAUTH_PROVIDER
-      - OAUTH2_PROXY_CLIENT_ID=$OAUTH_CLIENT_ID
-      - OAUTH2_PROXY_CLIENT_SECRET=$OAUTH_CLIENT_SECRET
-      - OAUTH2_PROXY_COOKIE_SECRET=$COOKIE_SECRET
-      - OAUTH2_PROXY_EMAIL_DOMAINS=$OAUTH_ALLOWED_EMAIL
-      - OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:4180
-      - OAUTH2_PROXY_REDIRECT_URL=https://$FULL_DOMAIN/oauth2/callback
-      - OAUTH2_PROXY_UPSTREAMS=static://202
-      - OAUTH2_PROXY_SKIP_PROVIDER_BUTTON=true
-      - OAUTH2_PROXY_SIGN_OUT_REDIRECT=https://$FULL_DOMAIN/oauth2/start
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.oauth2.rule=Host(\`$FULL_DOMAIN\`) && PathPrefix(\`/oauth2\`)"
-      - "traefik.http.routers.oauth2.entrypoints=websecure"
-      - "traefik.http.routers.oauth2.tls=true"
-      - "traefik.http.services.oauth2.loadbalancer.server.port=4180"
 
   traefik:
     image: "traefik:latest"
@@ -100,6 +75,10 @@ services:
     volumes:
       - "./letsencrypt:/letsencrypt"
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    labels:
+      - "traefik.http.middlewares.auth.basicauth.usersfile=/etc/headscale/.htpasswd"
+    volumes:
+      - "./configs/headscale:/etc/headscale"
 EOF
 
 # Create the config.yaml file
@@ -199,8 +178,8 @@ fi
 
 # Display the API key and instructions to the user
 echo "API Key generated: $API_KEY"
-echo "Visit: https://$FULL_DOMAIN/admin (OAuth2 login required)"
+echo "Visit: https://$FULL_DOMAIN/admin (Basic Auth login required)"
 echo "Use the following settings in the admin UI:"
 echo "API URL: https://$FULL_DOMAIN"
 echo "API Key: $API_KEY"
-echo "To logout, visit: https://$FULL_DOMAIN/oauth2/sign_out"
+echo "To logout, simply close your browser or clear credentials from the login prompt."
