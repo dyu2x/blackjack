@@ -18,6 +18,40 @@ mkdir -p headscale/configs/headscale
 HTPASSWD_FILE="headscale/configs/headscale/.htpasswd"
 docker run --rm httpd:2.4 htpasswd -Bbn "$BASIC_AUTH_USER" "$BASIC_AUTH_PASS" > "$HTPASSWD_FILE"
 
+# Create a simple login UI with logout button
+mkdir -p headscale/configs/headscale/ui
+cat <<EOF > headscale/configs/headscale/ui/index.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Headscale Admin</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }
+    .container { max-width: 400px; margin: auto; }
+    button.logout { background-color: #f44336; color: white; padding: 10px 20px; border: none; cursor: pointer; }
+    button.logout:hover { background-color: #d32f2f; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Welcome to Headscale Admin</h1>
+    <p>You are logged in.</p>
+    <button class="logout" onclick="logout()">Log Out</button>
+  </div>
+  <script>
+    function logout() {
+      fetch('/logout', { method: 'GET' })
+        .then(() => {
+          window.location.href = '/';
+        });
+    }
+  </script>
+</body>
+</html>
+EOF
+
 # Create the directory structure
 mkdir -p headscale/data headscale/letsencrypt
 
@@ -54,6 +88,19 @@ services:
       - "traefik.http.routers.headscale-admin.middlewares=auth"
       - "traefik.http.services.headscale-admin.loadbalancer.server.port=80"
 
+  login-ui:
+    image: nginx:alpine
+    container_name: login-ui
+    volumes:
+      - ./configs/headscale/ui:/usr/share/nginx/html:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.login-ui.rule=Host(\`$FULL_DOMAIN\`) && PathPrefix(\`/\`)"
+      - "traefik.http.routers.login-ui.entrypoints=websecure"
+      - "traefik.http.routers.login-ui.tls=true"
+      - "traefik.http.routers.login-ui.middlewares=auth"
+      - "traefik.http.services.login-ui.loadbalancer.server.port=80"
+
   traefik:
     image: "traefik:latest"
     container_name: "traefik"
@@ -75,10 +122,9 @@ services:
     volumes:
       - "./letsencrypt:/letsencrypt"
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "./configs/headscale:/etc/headscale"
     labels:
       - "traefik.http.middlewares.auth.basicauth.usersfile=/etc/headscale/.htpasswd"
-    volumes:
-      - "./configs/headscale:/etc/headscale"
 EOF
 
 # Create the config.yaml file
@@ -182,4 +228,4 @@ echo "Visit: https://$FULL_DOMAIN/admin (Basic Auth login required)"
 echo "Use the following settings in the admin UI:"
 echo "API URL: https://$FULL_DOMAIN"
 echo "API Key: $API_KEY"
-echo "To logout, simply close your browser or clear credentials from the login prompt."
+echo "To logout, click the logout button on the welcome page or clear credentials from the browser."
