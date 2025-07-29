@@ -1,5 +1,4 @@
-# Updating the existing install.sh script to ensure chmod and permission readiness
-install_script_updated_content = """#!/bin/bash
+#!/bin/bash
 
 # Ensure script is run as root
 if [[ $EUID -ne 0 ]]; then
@@ -31,7 +30,7 @@ services:
       TZ: 'America/New_York'
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.headscale.rule=Host(\\`$FULL_DOMAIN\\`)"
+      - "traefik.http.routers.headscale.rule=Host(\`$FULL_DOMAIN\`)"
       - "traefik.http.routers.headscale.tls.certresolver=myresolver"
       - "traefik.http.routers.headscale.entrypoints=websecure"
       - "traefik.http.routers.headscale.tls=true"
@@ -46,7 +45,7 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.services.headscale-admin.loadbalancer.server.port=80"
-      - "traefik.http.routers.headscale-admin.rule=Host(\\`$FULL_DOMAIN\\`) && PathPrefix(\\`/admin\\`)"
+      - "traefik.http.routers.headscale-admin.rule=Host(\`$FULL_DOMAIN\`) && PathPrefix(\`/admin\`)"
       - "traefik.http.routers.headscale-admin.entrypoints=websecure"
       - "traefik.http.routers.headscale-admin.tls=true"
 
@@ -151,14 +150,3 @@ fi
 # Display connection info
 echo "API Key: $API_KEY"
 echo "Visit: https://$FULL_DOMAIN/admin"
-"""
-
-# Save revised script
-revised_script_path = "/mnt/data/install_revised.sh"
-with open(revised_script_path, "w") as f:
-    f.write(install_script_updated_content)
-
-# Make script executable
-os.chmod(revised_script_path, 0o755)
-
-revised_script_path
