@@ -9,17 +9,16 @@ fi
 # Prompt the user for the full domain (including subdomain)
 read -p "Enter your full domain (e.g., headscale.example.com): " FULL_DOMAIN
 
-# Prompt for OAuth client info
-read -p "Enter your OAuth2 Client ID: " OAUTH_CLIENT_ID
-read -p "Enter your OAuth2 Client Secret: " OAUTH_CLIENT_SECRET
-read -p "Enter your OAuth2 Provider (e.g. google, github): " OAUTH_PROVIDER
-read -p "Enter the email/domain to allow (e.g. your@email.com or @yourdomain.com): " OAUTH_ALLOWED_EMAIL
+# Prompt for basic auth credentials
+read -p "Enter a username for the admin login: " ADMIN_USER
+read -s -p "Enter a password for the admin login: " ADMIN_PASS
+echo
 
-# Generate a secure cookie secret
-COOKIE_SECRET=$(openssl rand -hex 16)
+# Generate bcrypt hash of the password
+HTPASSWD=$(docker run --rm httpd:2.4 htpasswd -nbB "$ADMIN_USER" "$ADMIN_PASS" | sed 's/\\$/\\$\\$/g')
 
 # Create the directory structure
-mkdir -p headscale/data headscale/configs/headscale headscale/letsencrypt
+mkdir -p headscale/data headscale/configs/headscale
 
 # Create the docker-compose.yaml file
 cat <<EOF > headscale/docker-compose.yaml
@@ -48,34 +47,12 @@ services:
     restart: 'unless-stopped'
     labels:
       - "traefik.enable=true"
+      - "traefik.http.services.headscale-admin.loadbalancer.server.port=80"
       - "traefik.http.routers.headscale-admin.rule=Host(\`$FULL_DOMAIN\`) && PathPrefix(\`/admin\`)"
       - "traefik.http.routers.headscale-admin.entrypoints=websecure"
       - "traefik.http.routers.headscale-admin.tls=true"
-      - "traefik.http.routers.headscale-admin.middlewares=oauth-auth"
-      - "traefik.http.middlewares.oauth-auth.forwardauth.address=https://$FULL_DOMAIN/oauth2/auth"
-      - "traefik.http.middlewares.oauth-auth.forwardauth.trustforwardheader=true"
-      - "traefik.http.middlewares.oauth-auth.forwardauth.authresponseheaders=X-Auth-Request-User,X-Auth-Request-Email"
-      - "traefik.http.services.headscale-admin.loadbalancer.server.port=80"
-
-  oauth2-proxy:
-    image: quay.io/oauth2-proxy/oauth2-proxy:latest
-    container_name: oauth2-proxy
-    restart: unless-stopped
-    environment:
-      - OAUTH2_PROXY_PROVIDER=$OAUTH_PROVIDER
-      - OAUTH2_PROXY_CLIENT_ID=$OAUTH_CLIENT_ID
-      - OAUTH2_PROXY_CLIENT_SECRET=$OAUTH_CLIENT_SECRET
-      - OAUTH2_PROXY_COOKIE_SECRET=$COOKIE_SECRET
-      - OAUTH2_PROXY_EMAIL_DOMAINS=$OAUTH_ALLOWED_EMAIL
-      - OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:4180
-      - OAUTH2_PROXY_REDIRECT_URL=https://$FULL_DOMAIN/oauth2/callback
-      - OAUTH2_PROXY_UPSTREAMS=static://202
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.oauth2.rule=Host(\`$FULL_DOMAIN\`) && PathPrefix(\`/oauth2\`)"
-      - "traefik.http.routers.oauth2.entrypoints=websecure"
-      - "traefik.http.routers.oauth2.tls=true"
-      - "traefik.http.services.oauth2.loadbalancer.server.port=4180"
+      - "traefik.http.routers.headscale-admin.middlewares=admin-auth"
+      - "traefik.http.middlewares.admin-auth.basicauth.users=$HTPASSWD"
 
   traefik:
     image: "traefik:latest"
@@ -197,7 +174,7 @@ fi
 
 # Display the API key and instructions to the user
 echo "API Key generated: $API_KEY"
-echo "Visit: https://$FULL_DOMAIN/admin (OAuth2 login required)"
-echo "Enter the following settings in the admin UI:"
+echo "Visit: https://$FULL_DOMAIN/admin (use your credentials)"
+echo "Enter the following settings:"
 echo "API URL: https://$FULL_DOMAIN"
 echo "API Key: $API_KEY"
