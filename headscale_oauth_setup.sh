@@ -6,26 +6,28 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# Prompt for domain and credentials
+# Prompt the user for the full domain
 read -p "Enter your full domain (e.g., headscale.example.com): " FULL_DOMAIN
+
+# Prompt for Basic Auth credentials
 read -p "Enter username for WebUI login: " BASIC_AUTH_USER
 read -s -p "Enter password for WebUI login: " BASIC_AUTH_PASS
 echo
 
-# Ensure htpasswd is available
-if ! command -v htpasswd >/dev/null 2>&1; then
+# Install htpasswd utility if needed
+if ! command -v htpasswd >/dev/null; then
   echo "Installing apache2-utils for htpasswd..."
   apt-get update && apt-get install -y apache2-utils
 fi
 
-# Generate bcrypt hash for basic auth
+# Generate the bcrypt hash for basic auth
 HASHED_PASS=$(htpasswd -nbB "$BASIC_AUTH_USER" "$BASIC_AUTH_PASS" | cut -d ":" -f 2)
 BASIC_AUTH_CREDENTIALS="${BASIC_AUTH_USER}:${HASHED_PASS}"
 
 # Create directory structure
 mkdir -p headscale/data headscale/configs/headscale headscale/letsencrypt
 
-# Generate docker-compose.yaml
+# Create docker-compose.yaml
 cat <<EOF > headscale/docker-compose.yaml
 services:
   headscale:
@@ -41,9 +43,9 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.headscale.rule=Host(\`$FULL_DOMAIN\`)"
-      - "traefik.http.routers.headscale.tls.certresolver=myresolver"
       - "traefik.http.routers.headscale.entrypoints=websecure"
       - "traefik.http.routers.headscale.tls=true"
+      - "traefik.http.routers.headscale.tls.certresolver=myresolver"
       - "traefik.http.services.headscale.loadbalancer.server.port=8080"
 
   headscale-admin:
@@ -82,7 +84,7 @@ services:
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
 EOF
 
-# Generate Headscale config.yaml
+# Create Headscale config.yaml
 cat <<EOF > headscale/configs/headscale/config.yaml
 server_url: https://$FULL_DOMAIN
 listen_addr: 0.0.0.0:8080
@@ -114,6 +116,12 @@ disable_check_updates: false
 ephemeral_node_inactivity_timeout: 30m
 database:
   type: sqlite
+  debug: false
+  gorm:
+    prepare_stmt: true
+    parameterized_queries: true
+    skip_err_record_not_found: true
+    slow_threshold: 1000
   sqlite:
     path: /var/lib/headscale/db.sqlite
     write_ahead_log: true
@@ -124,11 +132,14 @@ tls_letsencrypt_hostname: ""
 tls_letsencrypt_cache_dir: /var/lib/headscale/cache
 tls_letsencrypt_challenge_type: HTTP-01
 tls_letsencrypt_listen: ":http"
+tls_cert_path: ""
+tls_key_path: ""
 log:
   format: text
   level: info
 policy:
   mode: database
+  path: ""
 dns:
   magic_dns: true
   base_domain: example.com
@@ -138,6 +149,9 @@ dns:
       - 1.0.0.1
       - 2606:4700:4700::1111
       - 2606:4700:4700::1001
+    split: {}
+  search_domains: []
+  extra_records: []
 unix_socket: /var/run/headscale/headscale.sock
 unix_socket_permission: "0770"
 logtail:
@@ -146,32 +160,31 @@ randomize_client_port: false
 EOF
 
 # Notify user
-echo "✅ Deployment files created in ./headscale"
+echo "Deployment files created in 'headscale' directory."
 
-# Start the containers
+# Start containers
 if ! docker compose -f headscale/docker-compose.yaml up -d; then
-  echo "❌ Failed to start Docker containers."
+  echo "Failed to start Docker containers. Exiting..."
   exit 1
 fi
 
-# Wait for containers to settle
+# Wait for containers to initialize
 sleep 10
 
 # Create API key
 API_KEY=$(docker exec headscale headscale apikey create)
 if [ $? -ne 0 ]; then
-  echo "❌ Failed to generate Headscale API key."
+  echo "Failed to create API Key. Exiting..."
   exit 1
 fi
 
-# Final instructions
+# Output access details
 echo
-echo "✅ Setup complete!"
-echo "🔐 WebUI login enabled at: https://$FULL_DOMAIN/admin"
-echo "   Username: $BASIC_AUTH_USER"
-echo "   Password: [hidden]"
+echo "✅ Headscale Admin Login Configured"
+echo "🌐 Visit: https://$FULL_DOMAIN/admin"
+echo "🔐 Username: $BASIC_AUTH_USER"
+echo "🔑 Password: (what you entered)"
 echo
-echo "🌐 Go to https://$FULL_DOMAIN/admin/settings"
-echo "Paste the following:"
-echo "   API URL: https://$FULL_DOMAIN"
-echo "   API Key: $API_KEY"
+echo "🛠 Configure Headscale Admin at: https://$FULL_DOMAIN/admin/settings"
+echo "   - API URL: https://$FULL_DOMAIN"
+echo "   - API Key: $API_KEY"
